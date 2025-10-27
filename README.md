@@ -16,7 +16,7 @@
 * Click to view a detailed popup with utilisation, memory and temperature readouts
 * Refresh interval (default 1 second) and ring visibility configurable from Cinnamon's applet settings
 
-<!-- ![Alt text](./preview.jpg) -->
+![Alt text](./preview.jpg)
 
 ## Negative Features
 
