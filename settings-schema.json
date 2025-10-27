@@ -1,0 +1,51 @@
+{
+  "schema-version": 1,
+  "layout": {
+    "type": "layout",
+    "pages": [
+      "page-general"
+    ],
+    "page-general": {
+      "type": "page",
+      "title": "General",
+      "sections": [
+        "section-refresh",
+        "section-visibility"
+      ]
+    },
+    "section-refresh": {
+      "type": "section",
+      "title": "Polling",
+      "keys": [
+        "refresh-interval"
+      ]
+    },
+    "section-visibility": {
+      "type": "section",
+      "title": "Display",
+      "keys": [
+        "show-memory",
+        "show-temperature"
+      ]
+    }
+  },
+  "refresh-interval": {
+    "type": "spinbutton",
+    "default": 1,
+    "min": 1,
+    "max": 120,
+    "step": 1,
+    "units": "seconds",
+    "description": "Time between GPU polls"
+  },
+  "show-memory": {
+    "type": "switch",
+    "default": true,
+    "description": "Show the VRAM ring and metrics"
+  },
+  "show-temperature": {
+    "type": "switch",
+    "default": true,
+    "description": "Show the temperature ring and metrics"
+  }
+}

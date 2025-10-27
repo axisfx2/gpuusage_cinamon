@@ -1,0 +1,69 @@
+.gpuusage-label {
+  color: #ffffff;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.gpuusage-panel-box {
+  padding: 2px 4px;
+}
+
+.gpuusage-menu-header {
+  font-weight: 700;
+  font-size: 16px;
+  padding: 4px 0;
+}
+
+.gpuusage-menu-header-container {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+
+.gpuusage-menu-item {
+  padding: 6px 4px;
+}
+
+.gpuusage-menu-entry {
+  spacing: 12px;
+  min-height: 56px;
+}
+
+.gpuusage-menu-item .gpuusage-menu-title {
+  font-weight: 600;
+  color: #f0f4ff;
+}
+
+.gpuusage-menu-item .gpuusage-menu-detail {
+  color: #c8d1e3;
+  font-size: 12px;
+}
+
+.gpuusage-menu-row {
+  min-height: 18px;
+}
+
+.gpuusage-menu-error {
+  color: #ff6666;
+}
+
+.gpuusage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  margin-right: 6px;
+  background-color: #ffffff;
+  opacity: 0.85;
+}
+
+.gpuusage-dot.gpu {
+  background-color: #00c853;
+}
+
+.gpuusage-dot.mem {
+  background-color: #2962ff;
+}
+
+.gpuusage-dot.temp {
+  background-color: #ff1744;
+}

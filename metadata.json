@@ -1,0 +1,14 @@
+{
+  "uuid": "gpuusage_cinamon@axisfx",
+  "name": "GPU Usage Monitor",
+  "description": "Panel applet that visualises NVIDIA GPU utilisation, memory usage, and temperature.",
+  "icon": "nvidia-settings",
+  "author": "Ewan Davidson",
+  "version": "1.0",
+  "cinnamon-version": [
+    "5.8",
+    "6.0",
+    "6.2"
+  ],
+  "max-instances": -1
+}
