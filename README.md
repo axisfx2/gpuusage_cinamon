@@ -20,7 +20,7 @@
 
 ## Negative Features
 
-* Coded with AI (I'm not learning qml or javascript)
+* Coded with AI (I'm not learning javascript)
 * Tested only on Cinamon version 6.0.4
 
 ## Dependencies
