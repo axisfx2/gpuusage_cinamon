@@ -2,10 +2,23 @@
   color: #ffffff;
   font-weight: 600;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  text-align: right;
 }
 
 .gpuusage-panel-box {
-  padding: 2px 4px;
+  padding: 0;
+}
+
+.gpuusage-frame {
+  padding: 2px 4px 2px 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background-color: transparent;
+}
+
+.gpuusage-gap {
+  width: 5px;
+  background-color: transparent;
 }
 
 .gpuusage-menu-header {
@@ -18,7 +31,6 @@
   padding-left: 8px;
   padding-right: 8px;
 }
-
 
 .gpuusage-menu-item {
   padding: 6px 4px;

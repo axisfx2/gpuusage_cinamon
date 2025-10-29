@@ -1,3 +1,5 @@
+imports.gi.versions.Pango = '1.0';
+
 const Applet = imports.ui.applet;
 const PopupMenu = imports.ui.popupMenu;
 const St = imports.gi.St;
@@ -8,7 +10,7 @@ const ByteArray = imports.byteArray;
 const Settings = imports.ui.settings;
 const Cairo = imports.cairo;
 const Gettext = imports.gettext;
-
+const Pango = imports.gi.Pango;
 const UUID = 'gpuusage_cinamon@axisfx';
 
 Gettext.bindtextdomain(UUID, GLib.get_home_dir() + '/.local/share/locale');
@@ -48,6 +50,7 @@ class GPUUsageApplet extends Applet.Applet {
             this._gaugeEntries = [];
             this._lastUpdated = null;
             this._errorMessage = null;
+            this._tooltipStyled = false;
 
             this._initSettings(instanceId);
             this._buildUi();
@@ -95,11 +98,11 @@ class GPUUsageApplet extends Applet.Applet {
             vertical: false,
             style_class: 'gpuusage-panel-box',
         });
+        this._gaugesBox.spacing = 0;
         this._gaugesBox.set_x_expand(true);
         this._gaugesBox.set_y_expand(true);
         this._gaugesBox.set_x_align(Clutter.ActorAlign.CENTER);
         this._gaugesBox.set_y_align(Clutter.ActorAlign.CENTER);
-        this._gaugesBox.spacing = 6;
 
         this.actor.add_actor(this._gaugesBox);
 
@@ -129,7 +132,6 @@ class GPUUsageApplet extends Applet.Applet {
 
         this._gpuSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._gpuSection);
-
     }
 
     _computeCircleSize(panelHeight) {
@@ -160,39 +162,83 @@ class GPUUsageApplet extends Applet.Applet {
             if (entry.repaintId) {
                 entry.drawing.disconnect(entry.repaintId);
             }
-            entry.bin.destroy();
+            entry.outer.destroy();
+            entry.separator.destroy();
         }
     }
 
     _createGaugeEntry() {
         const entry = { info: null };
 
-        entry.bin = new St.Widget({
+        entry.outer = new St.Widget({
             layout_manager: new Clutter.BinLayout(),
             reactive: false,
         });
-        entry.bin.set_x_align(Clutter.ActorAlign.CENTER);
-        entry.bin.set_y_align(Clutter.ActorAlign.CENTER);
+        entry.outer.add_style_class_name('gpuusage-frame');
+        entry.outer.set_x_expand(false);
+        entry.outer.set_y_expand(false);
+        entry.outer.set_x_align(Clutter.ActorAlign.CENTER);
+        entry.outer.set_y_align(Clutter.ActorAlign.CENTER);
 
-        entry.drawing = new St.DrawingArea({
+        entry.box = new St.BoxLayout({
+            vertical: false,
             reactive: false,
-            x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.CENTER,
         });
+        entry.box.spacing = 0;
+        entry.box.set_x_align(Clutter.ActorAlign.CENTER);
+        entry.box.set_y_align(Clutter.ActorAlign.CENTER);
+
+        entry.preLabelGap = new St.Widget({
+            reactive: false,
+            can_focus: false,
+        });
+        entry.preLabelGap.set_x_expand(false);
+        entry.preLabelGap.set_y_expand(true);
+        entry.preLabelGap.set_x_align(Clutter.ActorAlign.CENTER);
+        entry.preLabelGap.set_y_align(Clutter.ActorAlign.CENTER);
 
         entry.label = new St.Label({
             text: '--',
             style_class: 'gpuusage-label',
             reactive: false,
         });
-        entry.label.set_x_align(Clutter.ActorAlign.CENTER);
+        entry.label.set_x_align(Clutter.ActorAlign.END);
         entry.label.set_y_align(Clutter.ActorAlign.CENTER);
+        entry.label.set_x_expand(false);
+        entry.label.set_y_expand(true);
 
+        entry.gap = new St.Widget({
+            width: 5,
+            reactive: false,
+        });
+        entry.gap.add_style_class_name('gpuusage-gap');
+
+        entry.drawing = new St.DrawingArea({
+            reactive: false,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        entry.drawing.set_x_expand(false);
+        entry.drawing.set_y_expand(true);
+
+        entry.barWidth = 0;
         entry.repaintId = entry.drawing.connect('repaint', (area) => this._onGaugeRepaint(area, entry));
 
-        entry.bin.add_actor(entry.drawing);
-        entry.bin.add_actor(entry.label);
-        this._gaugesBox.add_actor(entry.bin);
+        entry.box.add_child(entry.preLabelGap);
+        entry.box.add_child(entry.label);
+        entry.box.add_child(entry.gap);
+        entry.box.add_child(entry.drawing);
+        entry.outer.add_actor(entry.box);
+
+        entry.separator = new St.Widget({
+            width: 5,
+            reactive: false,
+        });
+        entry.separator.add_style_class_name('gpuusage-gap');
+        entry.separator.hide();
+
+        this._gaugesBox.add_actor(entry.outer);
+        this._gaugesBox.add_actor(entry.separator);
 
         return entry;
     }
@@ -201,68 +247,201 @@ class GPUUsageApplet extends Applet.Applet {
         this._circleSize = this._computeCircleSize(this._getPanelHeight());
         const fontSize = Math.max(9, Math.round(this._circleSize * 0.32));
 
+        const interGapWidth = 5;
+        const labelGapWidth = interGapWidth;
+        const barWidth = this._circleSize + 20;
+        const totalHeight = this._circleSize;
+        const framePaddingLeft = 0;
+        const framePaddingRight = 4;
+        const framePaddingVertical = 4;
+
         for (const entry of this._gaugeEntries) {
-            entry.bin.set_size(this._circleSize, this._circleSize);
-            entry.drawing.set_size(this._circleSize, this._circleSize);
-            entry.label.set_style(`font-size: ${fontSize}px;`);
+            const [, naturalLabelWidth] = entry.label.clutter_text.get_preferred_width(-1);
+            const labelWidth = Math.ceil(naturalLabelWidth);
+            const boxWidth = labelGapWidth + labelWidth + interGapWidth + barWidth;
+            const frameWidth = boxWidth + framePaddingLeft + framePaddingRight;
+            const frameHeight = totalHeight + framePaddingVertical;
+
+            entry.outer.set_width(frameWidth);
+            entry.outer.set_height(frameHeight);
+            entry.box.set_width(boxWidth);
+            entry.box.set_height(totalHeight);
+            entry.label.set_style(`font-size: ${fontSize}px; margin: 0; padding: 0; text-align: right;`);
+            entry.label.set_width(labelWidth);
+            entry.label.set_y_expand(true);
+            entry.preLabelGap.set_width(labelGapWidth);
+            entry.gap.set_width(interGapWidth);
+            entry.barWidth = barWidth;
+            entry.drawing.set_size(barWidth, totalHeight);
+            entry.separator.set_height(frameHeight);
         }
 
         this._queueRepaint();
     }
 
     _onGaugeRepaint(area, entry) {
-        this._drawGauge(area, entry.info);
+        this._drawGauge(area, entry);
     }
 
-    _drawGauge(area, info) {
+    _drawGauge(area, entry) {
+        const info = entry ? entry.info : null;
         const cr = area.get_context();
-        const [width, height] = area.get_surface_size();
-        const size = Math.min(width, height);
-        const center = size / 2;
-        const lineWidth = Math.max(1, Math.round(size * 0.08));
+        const [totalWidth, height] = area.get_surface_size();
+
+        if (totalWidth <= 0 || height <= 0) {
+            return;
+        }
 
         cr.save();
         cr.setOperator(Cairo.Operator.CLEAR);
         cr.paint();
         cr.restore();
 
-        cr.setOperator(Cairo.Operator.CLEAR);
-        cr.paint();
-
         cr.setOperator(Cairo.Operator.OVER);
-        cr.setLineCap(Cairo.LineCap.ROUND);
-        cr.setLineWidth(lineWidth);
 
-        const gpuFraction = info ? clamp01(info.gpuPercent / 100) : 0;
-        const memFraction = (info && this._showMemory) ? clamp01(info.memPercent / 100) : null;
-        const tempFraction = (info && this._showTemperature) ? clamp01(info.tempPercent / 100) : null;
+        const bars = [];
+        bars.push({
+            fraction: info ? clamp01(info.gpuPercent / 100) : 0,
+            color: [0, 0.784, 0.325, 1],
+        });
 
-        const rings = [
-            { fraction: gpuFraction, radius: size * 0.45, color: [0, 0.784, 0.325, 1] },
-            { fraction: memFraction, radius: size * 0.32, color: [0.164, 0.639, 1, 1] },
-            { fraction: tempFraction, radius: size * 0.21, color: [1, 0.09, 0.267, 1] },
-        ];
-
-        cr.setSourceRGBA(0.13, 0.13, 0.13, 0.65);
-
-        for (const ring of rings) {
-            if (ring.fraction === null) {
-                continue;
-            }
-
-            cr.arc(center, center, ring.radius, 0, Math.PI * 2);
-            cr.stroke();
+        if (this._showMemory) {
+            bars.push({
+                fraction: info ? clamp01(info.memPercent / 100) : 0,
+                color: [0.164, 0.639, 1, 1],
+            });
         }
 
-        for (const ring of rings) {
-            if (ring.fraction === null || ring.fraction <= 0) {
-                continue;
-            }
+        if (this._showTemperature) {
+            bars.push({
+                fraction: info ? clamp01(info.tempPercent / 100) : 0,
+                color: [1, 0.09, 0.267, 1],
+            });
+        }
 
-            const angle = clamp01(ring.fraction) * Math.PI * 2;
-            cr.setSourceRGBA(...ring.color);
-            cr.arc(center, center, ring.radius, -Math.PI / 2, -Math.PI / 2 + angle);
+        if (bars.length === 0) {
+            bars.push({
+                fraction: 0,
+                color: [0, 0.784, 0.325, 1],
+            });
+        }
+
+        const barsCount = bars.length;
+        const verticalInset = Math.min(height / 2, Math.max(0.5, Math.min(1, height * 0.03)));
+        const availableHeight = Math.max(2, height - verticalInset * 2);
+        const spacingBase = barsCount > 1 ? Math.round(availableHeight * 0.08) : 0;
+        let barSpacing = Math.max(barsCount > 1 ? 2 : 0, spacingBase);
+        let barHeight = Math.max(2, barsCount > 0 ? (availableHeight - barSpacing * (barsCount - 1)) / barsCount : availableHeight);
+        let occupiedHeight = barHeight * barsCount + barSpacing * (barsCount - 1);
+
+        if (occupiedHeight > availableHeight && availableHeight > 0) {
+            const scale = availableHeight / occupiedHeight;
+            barHeight *= scale;
+            barSpacing *= scale;
+            occupiedHeight = availableHeight;
+        }
+
+        const extraSpace = Math.max(0, availableHeight - occupiedHeight);
+        const topOffset = verticalInset + extraSpace / 2;
+        const barStartX = 0;
+        const barWidth = Math.max(2, totalWidth);
+        const radius = Math.max(1, barHeight / 2);
+
+        const trackColor = [0.12, 0.12, 0.12, 0.9];
+
+        for (let index = 0; index < bars.length; index++) {
+            const row = bars[index];
+            const y = topOffset + index * (barHeight + barSpacing);
+
+            cr.setSourceRGBA(...trackColor);
+            drawRoundedRect(cr, barStartX, y, barWidth, barHeight, radius);
+            cr.fill();
+
+            cr.setSourceRGBA(1, 1, 1, 0.25);
+            cr.setLineWidth(1);
+            drawRoundedRect(cr, barStartX + 0.5, y + 0.5, Math.max(0, barWidth - 1), Math.max(0, barHeight - 1), Math.max(0.5, radius - 0.5));
             cr.stroke();
+
+            const fraction = row.fraction == null ? 0 : clamp01(row.fraction);
+            if (fraction > 0) {
+                cr.setSourceRGBA(...row.color);
+                const fillWidth = Math.max(0, barWidth * fraction);
+                drawRoundedRect(cr, barStartX, y, fillWidth, barHeight, radius);
+                cr.fill();
+            }
+        }
+    }
+
+    _drawMenuGauge(area, info) {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        cr.save();
+        cr.setOperator(Cairo.Operator.CLEAR);
+        cr.paint();
+        cr.restore();
+
+        cr.setOperator(Cairo.Operator.OVER);
+
+        const rows = [];
+        rows.push({ fraction: info ? clamp01(info.gpuPercent / 100) : 0, color: [0, 0.784, 0.325, 1] });
+        if (this._showMemory) {
+            rows.push({ fraction: info ? clamp01(info.memPercent / 100) : 0, color: [0.164, 0.639, 1, 1] });
+        }
+        if (this._showTemperature) {
+            rows.push({ fraction: info ? clamp01(info.tempPercent / 100) : 0, color: [1, 0.09, 0.267, 1] });
+        }
+        if (rows.length === 0) {
+            rows.push({ fraction: 0, color: [0, 0.784, 0.325, 1] });
+        }
+
+        const rowsCount = rows.length;
+        const verticalPadding = Math.max(2, Math.round(height * 0.08));
+        const availableHeight = Math.max(2, height - verticalPadding * 2);
+        const minSpacing = rowsCount > 1 ? 2 : 0;
+        const spacingBase = rowsCount > 1 ? Math.round(availableHeight * 0.12) : 0;
+        let barSpacing = Math.max(minSpacing, spacingBase);
+        let barHeight = Math.max(2, rowsCount > 0 ? (availableHeight - barSpacing * (rowsCount - 1)) / rowsCount : availableHeight);
+        let occupiedHeight = barHeight * rowsCount + barSpacing * (rowsCount - 1);
+
+        if (occupiedHeight > availableHeight && availableHeight > 0) {
+            const scale = availableHeight / occupiedHeight;
+            barHeight *= scale;
+            barSpacing *= scale;
+            occupiedHeight = availableHeight;
+        }
+
+        const topOffset = verticalPadding + Math.max(0, (availableHeight - occupiedHeight) / 2);
+        const paddingX = Math.max(2, Math.round(width * 0.12));
+        const barWidth = Math.max(2, width - paddingX * 2);
+        const radius = Math.max(1, barHeight / 2);
+
+        const trackColor = [0.12, 0.12, 0.12, 0.9];
+
+        for (let index = 0; index < rows.length; index++) {
+            const row = rows[index];
+            const y = topOffset + index * (barHeight + barSpacing);
+
+            cr.setSourceRGBA(...trackColor);
+            drawRoundedRect(cr, paddingX, y, barWidth, barHeight, radius);
+            cr.fill();
+
+            cr.setSourceRGBA(1, 1, 1, 0.25);
+            cr.setLineWidth(1);
+            drawRoundedRect(cr, paddingX + 0.5, y + 0.5, Math.max(0, barWidth - 1), Math.max(0, barHeight - 1), Math.max(0.5, radius - 0.5));
+            cr.stroke();
+
+            const fraction = row.fraction == null ? 0 : clamp01(row.fraction);
+            if (fraction > 0) {
+                cr.setSourceRGBA(...row.color);
+                const fillWidth = Math.max(0, barWidth * fraction);
+                drawRoundedRect(cr, paddingX, y, fillWidth, barHeight, radius);
+                cr.fill();
+            }
         }
     }
 
@@ -350,10 +529,18 @@ class GPUUsageApplet extends Applet.Applet {
 
             if (info) {
                 entry.label.set_text(info.shortLabel);
-                entry.bin.visible = true;
+                entry.outer.visible = true;
             } else {
                 entry.label.set_text('--');
-                entry.bin.visible = index === 0;
+                entry.outer.visible = index === 0;
+            }
+
+            if (entry.separator) {
+                if (info && index < this._gpuData.length - 1) {
+                    entry.separator.show();
+                } else {
+                    entry.separator.hide();
+                }
             }
 
             entry.drawing.queue_repaint();
@@ -375,7 +562,10 @@ class GPUUsageApplet extends Applet.Applet {
         const entry = this._gaugeEntries[0];
         entry.info = null;
         entry.label.set_text('!!');
-        entry.bin.visible = true;
+        entry.outer.visible = true;
+        if (entry.separator) {
+            entry.separator.hide();
+        }
         entry.drawing.queue_repaint();
 
         this._updateMenu();
@@ -418,7 +608,7 @@ class GPUUsageApplet extends Applet.Applet {
             });
             const gauge = new St.DrawingArea({ reactive: false });
             gauge.set_size(gaugeSize, gaugeSize);
-            gauge.connect('repaint', (area) => this._drawGauge(area, info));
+            gauge.connect('repaint', (area) => this._drawMenuGauge(area, info));
             gauge.queue_repaint();
             gaugeBin.child = gauge;
 
@@ -430,7 +620,7 @@ class GPUUsageApplet extends Applet.Applet {
                 style_class: 'gpuusage-menu-title',
             }));
 
-            column.add_child(this._makeLegendRow('gpu', _('Utilization: ') + info.gpuPercent + '%'));
+            column.add_child(this._makeLegendRow('gpu', _('Utilisation: ') + info.gpuPercent + '%'));
             column.add_child(this._makeLegendRow('mem', _('Memory: ') + `${info.memUsed} / ${info.memTotal} MiB (${info.memPercent}%)`));
 
             if (this._showTemperature) {
@@ -456,11 +646,47 @@ class GPUUsageApplet extends Applet.Applet {
             return;
         }
 
-        const lines = this._gpuData.map((info) => {
-            return `${info.name} (GPU ${info.index}): ${info.gpuPercent}% GPU, ${info.memUsed}/${info.memTotal} MiB, ${info.tempRaw}°C`;
+        const tooltipBlocks = this._gpuData.map((info) => {
+            const sections = [];
+            sections.push(`<b>${info.name} (GPU ${info.index}):</b>`);
+            sections.push(_('Utilisation: ') + `${info.gpuPercent}%`);
+            sections.push(_('Memory: ') + `${info.memUsed} / ${info.memTotal} MiB (${info.memPercent}%)`);
+            if (this._showTemperature) {
+                sections.push(_('Temperature: ') + `${info.tempRaw}°C`);
+            }
+            return sections.join('\n');
         });
 
-        this.set_applet_tooltip(lines.join('\n'));
+        const tooltipMarkup = tooltipBlocks.join('\n\n');
+        this.set_applet_tooltip(tooltipMarkup, true);
+
+        if (this._applet_tooltip && !this._tooltipStyled) {
+            const label = this._applet_tooltip._tooltip || this._applet_tooltip.actor || null;
+            if (label) {
+                if (typeof label.set_x_align === 'function') {
+                    label.set_x_align(Clutter.ActorAlign.START);
+                }
+                if (typeof label.set_x_expand === 'function') {
+                    label.set_x_expand(true);
+                }
+                if (typeof label.set_style === 'function') {
+                    label.set_style('text-align: left;');
+                }
+                const clutterText = label.clutter_text || (label.get_clutter_text ? label.get_clutter_text() : null);
+                if (clutterText) {
+                    if (typeof clutterText.set_alignment === 'function') {
+                        clutterText.set_alignment(Pango.Alignment.LEFT);
+                    }
+                    if (typeof clutterText.set_line_alignment === 'function') {
+                        clutterText.set_line_alignment(Pango.Alignment.LEFT);
+                    }
+                    if (typeof clutterText.set_justify === 'function') {
+                        clutterText.set_justify(false);
+                    }
+                }
+            }
+            this._tooltipStyled = true;
+        }
     }
 
     _queueRepaint() {
@@ -559,8 +785,30 @@ function makeShortLabel(name, fallbackIndex) {
         return `GPU${fallbackIndex}`;
     }
 
+    const tiMatch = name.match(/\b(\d{3,4})\s*(Ti)\b/i);
+    if (tiMatch) {
+        return `${tiMatch[1]} ${tiMatch[2].toUpperCase()}`;
+    }
+
     const match = name.match(/\b\d{3,4}\b/) || name.match(/\b\d+\b/);
     return match ? match[0] : `GPU${fallbackIndex}`;
+}
+
+function drawRoundedRect(cr, x, y, width, height, radius) {
+    const w = Math.max(0, width);
+    const h = Math.max(0, height);
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    const r = Math.min(Math.max(0, radius), w / 2, h / 2);
+
+    cr.newSubPath();
+    cr.arc(x + w - r, y + r, r, -Math.PI / 2, 0);
+    cr.arc(x + w - r, y + h - r, r, 0, Math.PI / 2);
+    cr.arc(x + r, y + h - r, r, Math.PI / 2, Math.PI);
+    cr.arc(x + r, y + r, r, Math.PI, 1.5 * Math.PI);
+    cr.closePath();
 }
 
 function main(metadata, orientation, panelHeight, instanceId) {
