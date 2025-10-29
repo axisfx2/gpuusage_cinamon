@@ -26,6 +26,7 @@ const GPU_QUERY_ARGS = [
 ];
 
 const HISTORY_LENGTH = 60; // seconds of history to retain
+const ANIMATION_DURATION_MS = 700;
 
 class GPUUsageApplet extends Applet.Applet {
     constructor(metadata, orientation, panelHeight, instanceId) {
@@ -54,6 +55,8 @@ class GPUUsageApplet extends Applet.Applet {
             this._errorMessage = null;
             this._tooltipStyled = false;
             this._history = new Map();
+            this._valueAnimations = new Map();
+            this._lastMetricValues = new Map();
 
             this._initSettings(instanceId);
             this._buildUi();
@@ -303,22 +306,37 @@ class GPUUsageApplet extends Applet.Applet {
         cr.setOperator(Cairo.Operator.OVER);
 
         const bars = [];
-        bars.push({
-            fraction: info ? clamp01(info.gpuPercent / 100) : 0,
-            color: [0, 0.784, 0.325, 1],
-        });
+        let shouldAnimate = false;
 
-        if (this._showMemory) {
+        if (info && Number.isFinite(info.index)) {
+            const gpuAnim = this._getAnimatedMetricValue(info.index, 'gpu', info.gpuPercent);
             bars.push({
-                fraction: info ? clamp01(info.memPercent / 100) : 0,
-                color: [0.164, 0.639, 1, 1],
+                fraction: clamp01((gpuAnim.value || 0) / 100),
+                color: [0, 0.784, 0.325, 1],
             });
-        }
+            shouldAnimate = shouldAnimate || gpuAnim.animating;
 
-        if (this._showTemperature) {
+            if (this._showMemory) {
+                const memAnim = this._getAnimatedMetricValue(info.index, 'mem', info.memPercent);
+                bars.push({
+                    fraction: clamp01((memAnim.value || 0) / 100),
+                    color: [0.164, 0.639, 1, 1],
+                });
+                shouldAnimate = shouldAnimate || memAnim.animating;
+            }
+
+            if (this._showTemperature) {
+                const tempAnim = this._getAnimatedMetricValue(info.index, 'temp', info.tempPercent);
+                bars.push({
+                    fraction: clamp01((tempAnim.value || 0) / 100),
+                    color: [1, 0.09, 0.267, 1],
+                });
+                shouldAnimate = shouldAnimate || tempAnim.animating;
+            }
+        } else {
             bars.push({
-                fraction: info ? clamp01(info.tempPercent / 100) : 0,
-                color: [1, 0.09, 0.267, 1],
+                fraction: 0,
+                color: [0, 0.784, 0.325, 1],
             });
         }
 
@@ -372,6 +390,10 @@ class GPUUsageApplet extends Applet.Applet {
                 drawRoundedRect(cr, barStartX, y, fillWidth, barHeight, radius);
                 cr.fill();
             }
+        }
+
+        if (shouldAnimate) {
+            this._scheduleDrawingAreaRepaint(area);
         }
     }
 
@@ -522,11 +544,20 @@ class GPUUsageApplet extends Applet.Applet {
         this._errorMessage = null;
         this._gpuData = Array.isArray(data) ? data : [];
 
+        if (this._gpuData.length === 0) {
+            this._valueAnimations.clear();
+            this._lastMetricValues.clear();
+        }
+
         const gaugeCount = this._gpuData.length > 0 ? this._gpuData.length : 1;
         this._ensureGaugeCount(gaugeCount);
         this._updateGaugeSizing();
 
         const seenIndices = new Set();
+
+        for (const info of this._gpuData) {
+            this._startValueAnimations(info);
+        }
 
         this._gaugeEntries.forEach((entry, index) => {
             const info = this._gpuData[index] || null;
@@ -589,6 +620,8 @@ class GPUUsageApplet extends Applet.Applet {
         for (const key of Array.from(this._history.keys())) {
             if (!seenIndices.has(key)) {
                 this._history.delete(key);
+                this._valueAnimations.delete(key);
+                this._lastMetricValues.delete(key);
             }
         }
     }
@@ -596,6 +629,9 @@ class GPUUsageApplet extends Applet.Applet {
     _handleError(message) {
         this._errorMessage = message;
         this._gpuData = [];
+        this._history.clear();
+        this._valueAnimations.clear();
+        this._lastMetricValues.clear();
 
         this._ensureGaugeCount(1);
         this._updateGaugeSizing();
@@ -674,6 +710,7 @@ class GPUUsageApplet extends Applet.Applet {
                 percent: info.gpuPercent,
                 displayText: `${info.gpuPercent}%`,
                 circleText: `${info.gpuPercent}%`,
+                rawValue: info.gpuPercent,
                 color: [0, 0.784, 0.325, 1],
             },
         ];
@@ -685,6 +722,7 @@ class GPUUsageApplet extends Applet.Applet {
                 percent: info.memPercent,
                 displayText: `${info.memUsed} / ${info.memTotal} MiB (${info.memPercent}%)`,
                 circleText: `${info.memPercent}%`,
+                rawValue: info.memPercent,
                 color: [0.164, 0.639, 1, 1],
             });
         }
@@ -696,6 +734,7 @@ class GPUUsageApplet extends Applet.Applet {
                 percent: info.tempPercent,
                 displayText: `${info.tempRaw}°C (${info.tempPercent}%)`,
                 circleText: `${info.tempRaw}°C`,
+                rawValue: info.tempRaw,
                 color: [1, 0.09, 0.267, 1],
             });
         }
@@ -751,6 +790,7 @@ class GPUUsageApplet extends Applet.Applet {
         chartArea.connect('repaint', (area) => {
             this._drawMetricHistory(area, gpuIndex, metric.id, metric.color);
         });
+        chartArea.queue_repaint();
 
         const circleSection = new St.BoxLayout({
             vertical: true,
@@ -775,8 +815,9 @@ class GPUUsageApplet extends Applet.Applet {
         });
         circleArea.set_size(72, 72);
         circleArea.connect('repaint', (area) => {
-            this._drawCircularGauge(area, metric.percent, metric.color);
+            this._drawCircularGauge(area, gpuIndex, metric.id, metric.color, circleLabel, metric);
         });
+        circleArea.queue_repaint();
 
         const circleLabel = new St.Label({
             text: metric.circleText || metric.displayText || '',
@@ -790,16 +831,7 @@ class GPUUsageApplet extends Applet.Applet {
         circleWrapper.add_actor(circleArea);
         circleWrapper.add_actor(circleLabel);
 
-        const circleCaption = new St.Label({
-            text: metric.displayText || '',
-            style_class: 'gpuusage-circle-caption',
-            x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        circleCaption.set_x_expand(true);
-
         circleSection.add_child(circleWrapper);
-        circleSection.add_child(circleCaption);
 
         container.add_child(header);
         container.add_child(chartArea);
@@ -848,13 +880,14 @@ class GPUUsageApplet extends Applet.Applet {
 
         const historyEntry = this._history.get(gpuIndex);
         const samples = historyEntry && Array.isArray(historyEntry[metricId]) ? historyEntry[metricId] : [];
-        const data = samples.slice(-HISTORY_LENGTH);
+        const trimmed = samples.slice(-HISTORY_LENGTH);
 
-        if (data.length === 0) {
+        if (trimmed.length === 0) {
             return;
         }
 
-        const effectiveData = data.length < 2 ? [data[0], data[0]] : data;
+        const renderSamples = trimmed;
+        const effectiveData = renderSamples.length < 2 ? [renderSamples[0], renderSamples[0]] : renderSamples;
         const step = effectiveData.length > 1 ? innerWidth / (effectiveData.length - 1) : innerWidth;
         const lineColor = Array.isArray(color) && color.length === 4 ? color : [0, 0.784, 0.325, 1];
 
@@ -887,7 +920,7 @@ class GPUUsageApplet extends Applet.Applet {
         cr.stroke();
     }
 
-    _drawCircularGauge(area, percent, color) {
+    _drawCircularGauge(area, gpuIndex, metricId, color, labelActor, metricDescriptor) {
         const cr = area.get_context();
         const [width, height] = area.get_surface_size();
 
@@ -902,7 +935,9 @@ class GPUUsageApplet extends Applet.Applet {
 
         cr.setOperator(Cairo.Operator.OVER);
 
-        const value = Math.max(0, Math.min(100, Number(percent) || 0));
+        const fallbackPercent = metricDescriptor && Number.isFinite(metricDescriptor.percent) ? metricDescriptor.percent : 0;
+        const { value: percentValue, animating: percentAnimating } = this._getAnimatedMetricValue(gpuIndex, metricId, fallbackPercent);
+        const value = Math.max(0, Math.min(100, Number(percentValue) || 0));
         const strokeWidth = Math.max(4, Math.min(width, height) * 0.12);
         const radius = Math.max(1, Math.min(width, height) / 2 - strokeWidth);
         const centerX = width / 2;
@@ -930,6 +965,171 @@ class GPUUsageApplet extends Applet.Applet {
         cr.setSourceRGBA(0, 0, 0, 0.35);
         cr.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
         cr.fill();
+
+        if (labelActor && labelActor.set_text) {
+            let labelText = metricDescriptor && typeof metricDescriptor.circleText === 'string' ? metricDescriptor.circleText : `${Math.round(value)}%`;
+            let additionalAnimating = false;
+
+            if (metricId === 'gpu' || metricId === 'mem') {
+                labelText = `${Math.round(value)}%`;
+            } else if (metricId === 'temp') {
+                const fallbackRaw = metricDescriptor && Number.isFinite(metricDescriptor.rawValue) ? metricDescriptor.rawValue : value;
+                const { value: rawValue, animating: rawAnimating } = this._getAnimatedMetricValue(gpuIndex, 'tempRaw', fallbackRaw);
+                additionalAnimating = rawAnimating;
+                labelText = `${Math.round(rawValue)}°C`;
+            }
+
+            if (labelActor.get_text() !== labelText) {
+                labelActor.set_text(labelText);
+            }
+
+            if (additionalAnimating) {
+                this._scheduleDrawingAreaRepaint(area);
+            }
+        }
+
+        if (percentAnimating) {
+            this._scheduleDrawingAreaRepaint(area);
+        }
+    }
+
+    _startValueAnimations(info) {
+        if (!info || !Number.isFinite(info.index)) {
+            return;
+        }
+
+        const index = info.index;
+        const previous = this._lastMetricValues.get(index) || {
+            gpu: info.gpuPercent,
+            mem: info.memPercent,
+            temp: info.tempPercent,
+            tempRaw: info.tempRaw,
+        };
+        const current = {
+            gpu: info.gpuPercent,
+            mem: info.memPercent,
+            temp: info.tempPercent,
+            tempRaw: info.tempRaw,
+        };
+
+        const now = this._now();
+        this._setValueAnimation(index, 'gpu', previous.gpu, current.gpu, now);
+        this._setValueAnimation(index, 'mem', previous.mem, current.mem, now);
+        this._setValueAnimation(index, 'temp', previous.temp, current.temp, now);
+        this._setValueAnimation(index, 'tempRaw', previous.tempRaw, current.tempRaw, now);
+
+        this._lastMetricValues.set(index, current);
+    }
+
+    _setValueAnimation(index, metricId, fromValue, toValue, startTime) {
+        if (!Number.isFinite(index)) {
+            return;
+        }
+
+        const safeTo = Number.isFinite(toValue) ? toValue : Number.isFinite(fromValue) ? fromValue : 0;
+        const safeFrom = Number.isFinite(fromValue) ? fromValue : safeTo;
+
+        if (!Number.isFinite(safeTo) || !Number.isFinite(safeFrom)) {
+            return;
+        }
+
+        const entry = this._valueAnimations.get(index) || {};
+        const duration = ANIMATION_DURATION_MS;
+        const now = Number.isFinite(startTime) ? startTime : this._now();
+
+        if (Math.abs(safeTo - safeFrom) < 0.001) {
+            entry[metricId] = {
+                start: now - duration,
+                duration,
+                from: safeTo,
+                to: safeTo,
+                current: safeTo,
+            };
+            this._valueAnimations.set(index, entry);
+            return;
+        }
+
+        entry[metricId] = {
+            start: now,
+            duration,
+            from: safeFrom,
+            to: safeTo,
+            current: safeFrom,
+        };
+
+        this._valueAnimations.set(index, entry);
+    }
+
+    _getAnimatedMetricValue(index, metricId, fallbackValue) {
+        const fallback = Number.isFinite(fallbackValue) ? fallbackValue : 0;
+        const entry = this._valueAnimations.get(index);
+        const state = entry ? entry[metricId] : null;
+
+        if (!state) {
+            return { value: fallback, animating: false };
+        }
+
+        const now = this._now();
+        const progress = this._getAnimationProgress(state, now);
+        if (progress >= 1) {
+            state.current = state.to;
+            state.from = state.to;
+            state.start = now - (state.duration || ANIMATION_DURATION_MS);
+            return { value: state.to, animating: false };
+        }
+
+        const value = this._lerp(state.from, state.to, progress);
+        state.current = value;
+        return { value, animating: true };
+    }
+
+    _scheduleDrawingAreaRepaint(area) {
+        if (!area || area._gpuusageRepaintScheduled) {
+            return;
+        }
+
+        area._gpuusageRepaintScheduled = true;
+        Mainloop.timeout_add(16, () => {
+            area._gpuusageRepaintScheduled = false;
+            try {
+                if (area && typeof area.queue_repaint === 'function') {
+                    area.queue_repaint();
+                }
+            } catch (error) {
+                // swallow repaint errors for destroyed actors
+            }
+
+            return 'SOURCE_REMOVE' in GLib ? GLib.SOURCE_REMOVE : false;
+        });
+    }
+
+    _getAnimationProgress(state, now = this._now()) {
+        if (!state || !Number.isFinite(state.start)) {
+            return 1;
+        }
+
+        const duration = Number.isFinite(state.duration) ? state.duration : ANIMATION_DURATION_MS;
+        if (duration <= 0) {
+            return 1;
+        }
+
+        const elapsed = now - state.start;
+        if (elapsed <= 0) {
+            return 0;
+        }
+
+        return Math.max(0, Math.min(1, elapsed / duration));
+    }
+
+    _lerp(fromValue, toValue, t) {
+        const clampedT = Math.max(0, Math.min(1, t));
+        const start = Number.isFinite(fromValue) ? fromValue : 0;
+        const end = Number.isFinite(toValue) ? toValue : start;
+        return start + (end - start) * clampedT;
+    }
+
+    _now() {
+        return GLib.get_monotonic_time() / 1000;
     }
 
     _updateTooltip() {
