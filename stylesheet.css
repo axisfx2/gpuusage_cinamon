@@ -36,9 +36,17 @@
   padding: 6px 4px;
 }
 
+.gpuusage-gpu-row {
+  spacing: 16px;
+}
+
 .gpuusage-menu-entry {
-  spacing: 12px;
-  min-height: 56px;
+  spacing: 16px;
+  min-height: 120px;
+  min-width: 260px;
+  background-color: rgba(12, 16, 26, 0.45);
+  border-radius: 12px;
+  padding: 12px 14px;
 }
 
 .gpuusage-menu-item .gpuusage-menu-title {
@@ -78,4 +86,53 @@
 
 .gpuusage-dot.temp {
   background-color: #ff1744;
+}
+
+.gpuusage-metric {
+  background-color: rgba(18, 24, 36, 0.55);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.gpuusage-metric-header {
+  spacing: 8px;
+}
+
+.gpuusage-metric-title {
+  font-weight: 600;
+  color: #f2f6ff;
+}
+
+.gpuusage-metric-value {
+  color: #d0daff;
+  font-size: 12px;
+}
+
+.gpuusage-history-chart {
+  border-radius: 8px;
+  background-color: rgba(9, 12, 18, 0.4);
+  min-height: 60px;
+}
+
+.gpuusage-metric-circle-section {
+  spacing: 6px;
+  padding-top: 4px;
+}
+
+.gpuusage-circle-wrapper {
+  min-width: 72px;
+  min-height: 72px;
+}
+
+.gpuusage-circle-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.gpuusage-circle-caption {
+  font-size: 11px;
+  color: #c8d1e3;
+  padding-top: 2px;
+  text-align: center;
 }

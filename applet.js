@@ -25,6 +25,8 @@ const GPU_QUERY_ARGS = [
     '--format=csv,noheader,nounits',
 ];
 
+const HISTORY_LENGTH = 60; // seconds of history to retain
+
 class GPUUsageApplet extends Applet.Applet {
     constructor(metadata, orientation, panelHeight, instanceId) {
         super(orientation, panelHeight, instanceId);
@@ -51,6 +53,7 @@ class GPUUsageApplet extends Applet.Applet {
             this._lastUpdated = null;
             this._errorMessage = null;
             this._tooltipStyled = false;
+            this._history = new Map();
 
             this._initSettings(instanceId);
             this._buildUi();
@@ -523,6 +526,8 @@ class GPUUsageApplet extends Applet.Applet {
         this._ensureGaugeCount(gaugeCount);
         this._updateGaugeSizing();
 
+        const seenIndices = new Set();
+
         this._gaugeEntries.forEach((entry, index) => {
             const info = this._gpuData[index] || null;
             entry.info = info;
@@ -530,6 +535,8 @@ class GPUUsageApplet extends Applet.Applet {
             if (info) {
                 entry.label.set_text(info.shortLabel);
                 entry.outer.visible = true;
+                seenIndices.add(info.index);
+                this._recordHistorySample(info);
             } else {
                 entry.label.set_text('--');
                 entry.outer.visible = index === 0;
@@ -548,8 +555,42 @@ class GPUUsageApplet extends Applet.Applet {
 
         this._lastUpdated = new Date();
 
+        this._cleanupHistory(seenIndices);
+
         this._updateMenu();
         this._updateTooltip();
+    }
+
+    _recordHistorySample(info) {
+        const entry = this._history.get(info.index) || { gpu: [], mem: [], temp: [] };
+
+        const clampValue = (value) => {
+            if (!Number.isFinite(value)) {
+                return 0;
+            }
+            return Math.max(0, Math.min(100, value));
+        };
+
+        const pushValue = (array, value) => {
+            array.push(clampValue(value));
+            if (array.length > HISTORY_LENGTH) {
+                array.shift();
+            }
+        };
+
+        pushValue(entry.gpu, info.gpuPercent);
+        pushValue(entry.mem, info.memPercent);
+        pushValue(entry.temp, info.tempPercent);
+
+        this._history.set(info.index, entry);
+    }
+
+    _cleanupHistory(seenIndices) {
+        for (const key of Array.from(this._history.keys())) {
+            if (!seenIndices.has(key)) {
+                this._history.delete(key);
+            }
+        }
     }
 
     _handleError(message) {
@@ -591,48 +632,304 @@ class GPUUsageApplet extends Applet.Applet {
             return;
         }
 
+        const rowItem = new PopupMenu.PopupBaseMenuItem({ reactive: false });
+        rowItem.actor.add_style_class_name('gpuusage-menu-item');
+
+        const rowContainer = new St.BoxLayout({
+            vertical: false,
+            style_class: 'gpuusage-gpu-row',
+            reactive: false,
+        });
+        rowContainer.spacing = 16;
+        rowContainer.set_x_expand(true);
+
         for (const info of this._gpuData) {
-            const item = new PopupMenu.PopupBaseMenuItem({ reactive: false });
-            item.actor.add_style_class_name('gpuusage-menu-item');
-
-            const contentRow = new St.BoxLayout({
-                vertical: false,
-                style_class: 'gpuusage-menu-entry',
-            });
-            contentRow.spacing = 12;
-
-            const gaugeSize = 52;
-            const gaugeBin = new St.Bin({
-                x_align: St.Align.MIDDLE,
-                y_align: St.Align.MIDDLE,
-            });
-            const gauge = new St.DrawingArea({ reactive: false });
-            gauge.set_size(gaugeSize, gaugeSize);
-            gauge.connect('repaint', (area) => this._drawMenuGauge(area, info));
-            gauge.queue_repaint();
-            gaugeBin.child = gauge;
-
-            const column = new St.BoxLayout({ vertical: true });
-            column.spacing = 4;
-            column.set_x_expand(true);
-            column.add_child(new St.Label({
-                text: `${info.name} (GPU ${info.index})`,
-                style_class: 'gpuusage-menu-title',
-            }));
-
-            column.add_child(this._makeLegendRow('gpu', _('Utilisation: ') + info.gpuPercent + '%'));
-            column.add_child(this._makeLegendRow('mem', _('Memory: ') + `${info.memUsed} / ${info.memTotal} MiB (${info.memPercent}%)`));
-
-            if (this._showTemperature) {
-                column.add_child(this._makeLegendRow('temp', _('Temperature: ') + info.tempRaw + '°C'));
-            }
-
-            contentRow.add_child(gaugeBin);
-            contentRow.add_child(column);
-
-            item.addActor(contentRow, { expand: true, align: St.Align.MIDDLE });
-            this._gpuSection.addMenuItem(item);
+            rowContainer.add_child(this._buildGpuEntry(info));
         }
+
+        rowItem.addActor(rowContainer, { expand: true, align: St.Align.MIDDLE });
+        this._gpuSection.addMenuItem(rowItem);
+    }
+
+    _buildGpuEntry(info) {
+        const container = new St.BoxLayout({
+            vertical: true,
+            style_class: 'gpuusage-menu-entry',
+            reactive: false,
+        });
+        container.spacing = 10;
+        container.set_x_expand(true);
+        container.set_y_expand(true);
+
+        container.add_child(new St.Label({
+            text: `${info.name} (GPU ${info.index})`,
+            style_class: 'gpuusage-menu-title',
+            x_align: Clutter.ActorAlign.START,
+        }));
+
+        const metricConfigs = [
+            {
+                id: 'gpu',
+                title: _('Utilisation'),
+                percent: info.gpuPercent,
+                displayText: `${info.gpuPercent}%`,
+                circleText: `${info.gpuPercent}%`,
+                color: [0, 0.784, 0.325, 1],
+            },
+        ];
+
+        if (this._showMemory) {
+            metricConfigs.push({
+                id: 'mem',
+                title: _('Memory'),
+                percent: info.memPercent,
+                displayText: `${info.memUsed} / ${info.memTotal} MiB (${info.memPercent}%)`,
+                circleText: `${info.memPercent}%`,
+                color: [0.164, 0.639, 1, 1],
+            });
+        }
+
+        if (this._showTemperature) {
+            metricConfigs.push({
+                id: 'temp',
+                title: _('Temperature'),
+                percent: info.tempPercent,
+                displayText: `${info.tempRaw}°C (${info.tempPercent}%)`,
+                circleText: `${info.tempRaw}°C`,
+                color: [1, 0.09, 0.267, 1],
+            });
+        }
+
+        for (const metric of metricConfigs) {
+            container.add_child(this._buildMetricVisualization(info.index, metric));
+        }
+
+        return container;
+    }
+
+    _buildMetricVisualization(gpuIndex, metric) {
+        const container = new St.BoxLayout({
+            vertical: true,
+            style_class: 'gpuusage-metric',
+            reactive: false,
+        });
+        container.spacing = 6;
+        container.set_x_expand(true);
+
+        const header = new St.BoxLayout({
+            vertical: false,
+            style_class: 'gpuusage-metric-header',
+            reactive: false,
+        });
+        header.set_x_expand(true);
+
+        const titleLabel = new St.Label({
+            text: metric.title,
+            style_class: 'gpuusage-metric-title',
+            x_align: Clutter.ActorAlign.START,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        titleLabel.set_x_expand(true);
+
+        const valueLabel = new St.Label({
+            text: metric.displayText,
+            style_class: 'gpuusage-metric-value',
+            x_align: Clutter.ActorAlign.END,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        valueLabel.set_x_expand(false);
+
+        header.add_child(titleLabel);
+        header.add_child(valueLabel);
+
+        const chartArea = new St.DrawingArea({
+            reactive: false,
+            style_class: 'gpuusage-history-chart',
+        });
+        chartArea.set_height(60);
+        chartArea.set_x_expand(true);
+        chartArea.connect('repaint', (area) => {
+            this._drawMetricHistory(area, gpuIndex, metric.id, metric.color);
+        });
+
+        const circleSection = new St.BoxLayout({
+            vertical: true,
+            style_class: 'gpuusage-metric-circle-section',
+            reactive: false,
+        });
+        circleSection.set_x_expand(true);
+        circleSection.set_y_align(Clutter.ActorAlign.CENTER);
+
+        const circleWrapper = new St.Widget({
+            reactive: false,
+            layout_manager: new Clutter.BinLayout(),
+            style_class: 'gpuusage-circle-wrapper',
+        });
+        circleWrapper.set_size(72, 72);
+        circleWrapper.set_x_align(Clutter.ActorAlign.CENTER);
+        circleWrapper.set_y_align(Clutter.ActorAlign.CENTER);
+
+        const circleArea = new St.DrawingArea({
+            reactive: false,
+            style_class: 'gpuusage-circle-gauge',
+        });
+        circleArea.set_size(72, 72);
+        circleArea.connect('repaint', (area) => {
+            this._drawCircularGauge(area, metric.percent, metric.color);
+        });
+
+        const circleLabel = new St.Label({
+            text: metric.circleText || metric.displayText || '',
+            style_class: 'gpuusage-circle-text',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        circleLabel.set_x_expand(true);
+        circleLabel.set_y_expand(true);
+
+        circleWrapper.add_actor(circleArea);
+        circleWrapper.add_actor(circleLabel);
+
+        const circleCaption = new St.Label({
+            text: metric.displayText || '',
+            style_class: 'gpuusage-circle-caption',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        circleCaption.set_x_expand(true);
+
+        circleSection.add_child(circleWrapper);
+        circleSection.add_child(circleCaption);
+
+        container.add_child(header);
+        container.add_child(chartArea);
+        container.add_child(circleSection);
+
+        return container;
+    }
+
+    _drawMetricHistory(area, gpuIndex, metricId, color) {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        cr.save();
+        cr.setOperator(Cairo.Operator.CLEAR);
+        cr.paint();
+        cr.restore();
+
+        cr.setOperator(Cairo.Operator.OVER);
+
+        const backgroundColor = [0.07, 0.07, 0.07, 0.9];
+        drawRoundedRect(cr, 0, 0, width, height, 8);
+        cr.setSourceRGBA(...backgroundColor);
+        cr.fill();
+
+        const padding = Math.max(6, Math.round(Math.min(width, height) * 0.12));
+        const innerWidth = Math.max(1, width - padding * 2);
+        const innerHeight = Math.max(1, height - padding * 2);
+        const baselineY = padding + innerHeight;
+        const startX = padding;
+
+        const gridColor = [1, 1, 1, 0.06];
+        const gridLines = 4;
+
+        cr.setSourceRGBA(...gridColor);
+        cr.setLineWidth(1);
+        for (let i = 0; i <= gridLines; i++) {
+            const y = padding + (innerHeight / gridLines) * i + 0.5;
+            cr.moveTo(startX, y);
+            cr.lineTo(startX + innerWidth, y);
+        }
+        cr.stroke();
+
+        const historyEntry = this._history.get(gpuIndex);
+        const samples = historyEntry && Array.isArray(historyEntry[metricId]) ? historyEntry[metricId] : [];
+        const data = samples.slice(-HISTORY_LENGTH);
+
+        if (data.length === 0) {
+            return;
+        }
+
+        const effectiveData = data.length < 2 ? [data[0], data[0]] : data;
+        const step = effectiveData.length > 1 ? innerWidth / (effectiveData.length - 1) : innerWidth;
+        const lineColor = Array.isArray(color) && color.length === 4 ? color : [0, 0.784, 0.325, 1];
+
+        cr.setSourceRGBA(lineColor[0], lineColor[1], lineColor[2], 0.2);
+        cr.moveTo(startX, baselineY);
+        effectiveData.forEach((value, index) => {
+            const clamped = Math.max(0, Math.min(100, Number(value) || 0));
+            const x = startX + step * index;
+            const y = baselineY - (clamped / 100) * innerHeight;
+            cr.lineTo(x, y);
+        });
+        cr.lineTo(startX + innerWidth, baselineY);
+        cr.closePath();
+        cr.fill();
+
+        cr.setSourceRGBA(lineColor[0], lineColor[1], lineColor[2], lineColor[3] != null ? lineColor[3] : 1);
+        cr.setLineWidth(Math.max(1.5, innerHeight * 0.05));
+        cr.setLineJoin(Cairo.LineJoin.ROUND);
+        cr.setLineCap(Cairo.LineCap.ROUND);
+        effectiveData.forEach((value, index) => {
+            const clamped = Math.max(0, Math.min(100, Number(value) || 0));
+            const x = startX + step * index;
+            const y = baselineY - (clamped / 100) * innerHeight;
+            if (index === 0) {
+                cr.moveTo(x, y);
+            } else {
+                cr.lineTo(x, y);
+            }
+        });
+        cr.stroke();
+    }
+
+    _drawCircularGauge(area, percent, color) {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        cr.save();
+        cr.setOperator(Cairo.Operator.CLEAR);
+        cr.paint();
+        cr.restore();
+
+        cr.setOperator(Cairo.Operator.OVER);
+
+        const value = Math.max(0, Math.min(100, Number(percent) || 0));
+        const strokeWidth = Math.max(4, Math.min(width, height) * 0.12);
+        const radius = Math.max(1, Math.min(width, height) / 2 - strokeWidth);
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const startAngle = -Math.PI / 2;
+        const sweep = (value / 100) * Math.PI * 2;
+
+        const trackColor = [0.15, 0.15, 0.15, 0.9];
+        const fillColor = Array.isArray(color) && color.length === 4 ? color : [0, 0.784, 0.325, 1];
+
+        cr.setLineWidth(strokeWidth);
+        cr.setLineCap(Cairo.LineCap.ROUND);
+
+        cr.setSourceRGBA(...trackColor);
+        cr.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        cr.stroke();
+
+        if (sweep > 0) {
+            cr.setSourceRGBA(fillColor[0], fillColor[1], fillColor[2], fillColor[3] != null ? fillColor[3] : 1);
+            cr.arc(centerX, centerY, radius, startAngle, startAngle + sweep);
+            cr.stroke();
+        }
+
+        const innerRadius = Math.max(0, radius - strokeWidth * 0.65);
+        cr.setSourceRGBA(0, 0, 0, 0.35);
+        cr.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
+        cr.fill();
     }
 
     _updateTooltip() {
