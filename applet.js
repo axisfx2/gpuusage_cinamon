@@ -6,11 +6,11 @@ const St = imports.gi.St;
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
 const Mainloop = imports.mainloop;
-const ByteArray = imports.byteArray;
 const Settings = imports.ui.settings;
 const Cairo = imports.cairo;
 const Gettext = imports.gettext;
 const Pango = imports.gi.Pango;
+const Gio = imports.gi.Gio;
 const UUID = 'gpuusage_cinamon@axisfx';
 
 Gettext.bindtextdomain(UUID, GLib.get_home_dir() + '/.local/share/locale');
@@ -57,6 +57,8 @@ class GPUUsageApplet extends Applet.Applet {
             this._history = new Map();
             this._valueAnimations = new Map();
             this._lastMetricValues = new Map();
+            this._queryInProgress = false;
+            this._pendingRefresh = false;
 
             this._initSettings(instanceId);
             this._buildUi();
@@ -504,40 +506,61 @@ class GPUUsageApplet extends Applet.Applet {
     }
 
     _updateGpuData() {
-        let data;
-
-        try {
-            data = this._readGpuStats();
-        } catch (error) {
-            this._handleError(error.message || error.toString());
+        if (this._queryInProgress) {
+            this._pendingRefresh = true;
             return;
         }
 
-        this._applyData(data);
-    }
-
-    _readGpuStats() {
-        let spawnResult;
+        let subprocess;
+        this._queryInProgress = true;
+        this._pendingRefresh = false;
 
         try {
-            spawnResult = GLib.spawn_sync(null, GPU_QUERY_ARGS, null, GLib.SpawnFlags.SEARCH_PATH, null);
+            subprocess = new Gio.Subprocess({
+                argv: GPU_QUERY_ARGS,
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            subprocess.init(null);
         } catch (error) {
-            throw new Error(_('Unable to execute nvidia-smi: ') + error.message);
+            this._queryInProgress = false;
+            this._handleError(_('Unable to execute nvidia-smi: ') + error.message);
+            return;
         }
 
-        const [success, stdout, stderr, exitStatus] = spawnResult;
+        subprocess.communicate_utf8_async(null, null, (proc, res) => {
+            let stdout = '';
+            let stderr = '';
+            let success = false;
 
-        if (!success) {
-            throw new Error(_('Failed to query GPU statistics.'));
-        }
+            try {
+                const [ok, out, err] = proc.communicate_utf8_finish(res);
+                stdout = out || '';
+                stderr = err || '';
+                success = ok && proc.get_successful();
+            } catch (error) {
+                stderr = error && error.message ? error.message : String(error);
+                success = false;
+            }
 
-        if (exitStatus !== 0) {
-            const errText = ByteArray.toString(stderr).trim();
-            throw new Error(errText || _('nvidia-smi returned a non-zero exit status.'));
-        }
+            this._queryInProgress = false;
 
-        const output = ByteArray.toString(stdout).trim();
-        return parseGpuOutput(output);
+            if (!success) {
+                const errText = (stderr || '').trim();
+                this._handleError(errText || _('Failed to query GPU statistics.'));
+            } else {
+                try {
+                    const data = parseGpuOutput((stdout || '').trim());
+                    this._applyData(data);
+                } catch (error) {
+                    this._handleError(error.message || String(error));
+                }
+            }
+
+            if (this._pendingRefresh) {
+                this._pendingRefresh = false;
+                this._updateGpuData();
+            }
+        });
     }
 
     _applyData(data) {
@@ -551,7 +574,6 @@ class GPUUsageApplet extends Applet.Applet {
 
         const gaugeCount = this._gpuData.length > 0 ? this._gpuData.length : 1;
         this._ensureGaugeCount(gaugeCount);
-        this._updateGaugeSizing();
 
         const seenIndices = new Set();
 
@@ -583,6 +605,8 @@ class GPUUsageApplet extends Applet.Applet {
 
             entry.drawing.queue_repaint();
         });
+
+        this._updateGaugeSizing();
 
         this._lastUpdated = new Date();
 
@@ -627,6 +651,8 @@ class GPUUsageApplet extends Applet.Applet {
     }
 
     _handleError(message) {
+        this._queryInProgress = false;
+        this._pendingRefresh = false;
         this._errorMessage = message;
         this._gpuData = [];
         this._history.clear();
